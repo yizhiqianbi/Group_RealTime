@@ -1,0 +1,61 @@
+#pragma kernel CSMain
+#define THREAD_SIZE_X 8
+#define THREAD_SIZE_Y 8
+#define GROUP_THREADS THREAD_SIZE_X*THREAD_SIZE_Y
+//data struct
+struct FastData {
+    int ObjArea;
+    int CoveredArea;
+    int LargeArea;
+    float rg;
+    float rg2;
+    float yb;
+    float yb2;
+    float depth;
+    float depth2;
+};
+groupshared int3 area_shareMem[GROUP_THREADS];
+groupshared float4 color_shareMem[GROUP_THREADS];
+groupshared float2 depth_shareMem[GROUP_THREADS];
+//input data
+Texture2D<int3> area_inputBuffer;
+Texture2D<float4> color_inputBuffer;
+Texture2D<float2> depth_inputBuffer;
+//output data
+RWStructuredBuffer<FastData> outputData;
+
+[numthreads(THREAD_SIZE_X, THREAD_SIZE_Y, 1)]
+void CSMain(uint3 Gid : SV_GroupID,
+    uint3 DTid : SV_DispatchThreadID,
+    uint3 GTid : SV_GroupThreadID,
+    uint GI : SV_GroupIndex) 
+{
+    area_shareMem[GI] = area_inputBuffer[DTid.xy];
+    color_shareMem[GI] = color_inputBuffer[DTid.xy];
+    depth_shareMem[GI] = depth_inputBuffer[DTid.xy];
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint s = GROUP_THREADS / 2; s > 0; s >>= 1) {
+        if (GI < s) {
+            area_shareMem[GI] += area_shareMem[GI + s];
+            color_shareMem[GI] += color_shareMem[GI + s];
+            depth_shareMem[GI] += depth_shareMem[GI + s];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (GI == 0) {
+        uint GIndex = Gid.y * area_inputBuffer.Length.x / THREAD_SIZE_X + Gid.x;
+        outputData[GIndex].ObjArea = area_shareMem[0].x;
+        outputData[GIndex].CoveredArea = area_shareMem[0].y;
+        outputData[GIndex].LargeArea = area_shareMem[0].z;
+        outputData[GIndex].rg = color_shareMem[0].x;
+        outputData[GIndex].rg2 = color_shareMem[0].y;
+        outputData[GIndex].yb = color_shareMem[0].z;
+        outputData[GIndex].yb2 = color_shareMem[0].w;
+        outputData[GIndex].depth = depth_shareMem[0].x;
+        outputData[GIndex].depth2 = depth_shareMem[0].y;
+    }
+}
+

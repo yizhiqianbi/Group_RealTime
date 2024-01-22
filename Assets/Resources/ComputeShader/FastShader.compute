@@ -1,0 +1,123 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#define THREAD_SIZE_X 8
+#define THREAD_SIZE_Y 8
+#define GROUP_THREADS THREAD_SIZE_X*THREAD_SIZE_Y
+//input data
+Texture2D<float4> AllDepthTex;
+Texture2D<float4> ObjDepthTex;
+Texture2D<float4> LargeDepthTex;
+Texture2D<float4> ColorfulObjTexture;
+//new data struct
+struct FastData {
+    int ObjArea;
+    int CoveredArea;
+    int LargeArea;
+    float rg;
+    float rg2;
+    float yb;
+    float yb2;
+    float depth;
+    float depth2;
+};
+groupshared int3 area_shareMem[GROUP_THREADS];
+groupshared float4 color_shareMem[GROUP_THREADS];
+groupshared float2 depth_shareMem[GROUP_THREADS];
+//output data
+//plan A
+//RWStructuredBuffer<FastData> outputData;
+//plan B
+RWTexture2D<int3> area_outputBuffer;
+//objArea coverArea largeArea
+RWTexture2D<float4> color_outputBuffer;
+//rg rg2 yb yb2
+RWTexture2D<float2> depth_outputBuffer;
+//depth depth2
+
+[numthreads(THREAD_SIZE_X, THREAD_SIZE_Y, 1)]
+void CSMain(uint3 Gid : SV_GroupID,
+    uint3 DTid : SV_DispatchThreadID,
+    uint3 GTid : SV_GroupThreadID,
+    uint GI : SV_GroupIndex)
+{
+    uint Idx = DTid.y * AllDepthTex.Length.x + DTid.x;
+    int objArea, coverArea, largeArea;
+    if (ObjDepthTex[DTid.xy].x != 0) {
+        objArea = 1;
+        coverArea = (ObjDepthTex[DTid.xy].x != AllDepthTex[DTid.xy].x) ? 1 : 0;
+    }
+    else {
+        objArea = 0;
+        coverArea = 0;
+    }
+    largeArea = (LargeDepthTex[DTid.xy].x != 0) ? 1 : 0;
+    area_shareMem[GI] = int3(objArea, coverArea, largeArea);
+
+    float r = ColorfulObjTexture[DTid.xy].r;
+    float g = ColorfulObjTexture[DTid.xy].g;
+    float b = ColorfulObjTexture[DTid.xy].b;
+    float rg = r - g;
+    float yb = (r + g) / 2 - b;
+    color_shareMem[GI] = float4(rg, rg * rg, yb, yb * yb);
+    
+    float depth = ObjDepthTex[DTid.xy].x;
+    depth_shareMem[GI] = float2(depth, depth * depth);
+
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint s = GROUP_THREADS / 2; s > 0; s >>= 1) {
+        if (GI < s) {
+            area_shareMem[GI] += area_shareMem[GI + s];
+            color_shareMem[GI] += color_shareMem[GI + s];
+            depth_shareMem[GI] += depth_shareMem[GI + s];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+
+    if (GI == 0)
+    {
+        uint GIndex = Gid.y * AllDepthTex.Length.x / THREAD_SIZE_X + Gid.x;
+        //plan A
+        //outputData[GIndex].ObjArea = area_shareMem[0].x;
+        //outputData[GIndex].CoveredArea = area_shareMem[0].y;
+        //outputData[GIndex].LargeArea = area_shareMem[0].z;
+        //outputData[GIndex].rg = color_shareMem[0].x;
+        //outputData[GIndex].rg2 = color_shareMem[0].y;
+        //outputData[GIndex].yb = color_shareMem[0].z;
+        //outputData[GIndex].yb2 = color_shareMem[0].w;
+        //outputData[GIndex].depth = depth_shareMem[0].x;
+        //outputData[GIndex].depth2 = depth_shareMem[0].y;
+        //plan B
+        area_outputBuffer[Gid.xy] = area_shareMem[0];
+        color_outputBuffer[Gid.xy] = color_shareMem[0];
+        depth_outputBuffer[Gid.xy] = depth_shareMem[0];
+    }
+}
+
+////base
+//[numthreads(8, 8, 1)]
+//void CSMain(uint3 id : SV_DispatchThreadID)
+//{
+//    int index = id.y * AllDepthTex.Length.x + id.x;
+//    if (ObjDepthTex[id.xy].x != 0) {
+//        outputData[index].ObjArea = 1;
+//        if (ObjDepthTex[id.xy].x != AllDepthTex[id.xy].x) {
+//            outputData[index].CoveredArea = 1;
+//        }
+//        else {
+//            outputData[index].CoveredArea = 0;
+//        }
+//    }
+//    else {
+//        outputData[index].CoveredArea = 0;
+//        outputData[index].ObjArea = 0;
+//    }
+//    if (LargeDepthTex[id.xy].x != 0) {
+//        outputData[index].LargeArea = 1;
+//    }
+//    else {
+//        outputData[index].LargeArea = 0;
+//    }
+//}
